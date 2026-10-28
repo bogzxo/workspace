@@ -100,7 +100,7 @@ try {
         $behind = Missing $dir
         if ($behind.Count -gt 0) { throw "GitHub has $($behind.Count) commit(s) of $(Name $dir) that aren't here, run pull-all.ps1 first" }
 
-        $dirty = @(& git -C $dir status --porcelain --ignore-submodules=all | Where-Object { $_ })
+        $dirty = @(& git -C $dir status --porcelain --ignore-submodules=all 2>$null | Where-Object { $_ })
         if ($dirty.Count -gt 0) { Say "  $(Name $dir) has $($dirty.Count) uncommitted change(s), they stay here" 'DarkYellow' }
     }
 
