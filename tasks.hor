@@ -1,0 +1,177 @@
+// The automations of the workspace, the folder every repository of it is in (horizon with HIDL in it, hex, Fighter2D).
+// Each is a command of the palette, Automation and its title, and in Run Automation of the Terminal menu. Push all is
+// push-all.ps1 in HIDL, run off the editor's thread with a card that says how far it got and a stop on it, what it says
+// in the Output panel. Pull all runs pull-all.ps1. Hex finds this file next to the .hex-workspace that opens the lot.
+
+let automations = {
+    pull_all: {
+        // Every repository brought up to what's on GitHub, and whatever isn't here cloned, so the engine is as new as
+        // the game and Hex built against it
+        title: "Pull all",
+        command: "if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -File pull-all.ps1; else powershell -NoProfile -ExecutionPolicy Bypass -File pull-all.ps1; fi",
+        shell: "bash",
+    },
+    push_all: {
+        // HIDL first, then the engine pointing at it, then everything built on the engine, so nothing on GitHub ever
+        // needs a commit that isn't there yet
+        title: "Push all",
+        run: hex => push_all(hex, false),
+    },
+    push_all_dry_run: {
+        // What Push all would do, nothing changed and nothing pushed
+        title: "Push all (dry run)",
+        run: hex => push_all(hex, true),
+    },
+    status: {
+        // Every repository's branch and changes, in Git Bash
+        title: "Status of every repository",
+        command: "for repo in . horizon/Horizon.HIDL horizon hex Fighter2D; do if [ -e \"$repo/.git\" ]; then echo \"== $repo\"; git -C \"$repo\" status -sb; fi; done",
+        shell: "bash",
+    },
+};
+
+// The repositories in the order they're pushed. Hex and the game build against the engine as it is on GitHub, not a
+// commit of it they keep, so they only have to go after it. One that isn't checked out here is left out (Fighter2D on
+// a machine that only has Hex), and "." is the workspace itself
+const HIDL = "horizon/Horizon.HIDL"
+const ENGINE = "horizon"
+const AFTER = ["hex", "Fighter2D", "."]
+
+// What gives a commit away as Claude's, which never goes to GitHub
+const CREDIT = "(?i)co-authored-by: *claude|generated with .?claude|noreply@anthropic"
+
+// Every repository fetched and looked at, then each pushed in order with HIDL's move in the engine committed between.
+// Uncommitted work stays where it is and is said, only that move is committed here. A repository GitHub has commits
+// for that aren't here, or a commit that mustn't go to GitHub, stops the lot before anything is pushed
+func push_all(hex, dry) {
+    if (dry) hex.print("Dry run, nothing is changed")
+
+    hex.print("Checking the repos")
+    for (repo in [HIDL, ENGINE]) {
+        if (!checked_out(hex, repo)) error(repo + " isn't a git checkout, nothing goes without it")
+    }
+
+    let after = AFTER.filter(repo => checked_out(hex, repo))
+    for (repo in AFTER) {
+        if (!checked_out(hex, repo)) hex.print("  " + label(repo) + " isn't here, it's left out")
+    }
+
+    let all = [HIDL, ENGINE, ...after]
+    for (i, repo in all) {
+        hex.progress(i / (all.count + 2), "fetching " + label(repo))
+        git(hex, repo, ["fetch", "-q", "origin"])
+
+        for (commit in unpushed(hex, repo)) {
+            let text = git(hex, repo, ["log", "-1", "--format=%an %ae%n%B", commit])
+            if (hex.matches(text, CREDIT)) error(label(repo) + " " + commit.substring(0, 7) + " credits Claude or an AI, take that out of it and run this again")
+        }
+
+        let behind = lines(git(hex, repo, ["rev-list", "HEAD..@{u}"]))
+        if (behind.count > 0) error(`GitHub has {behind.count} commit(s) of {label(repo)} that aren't here, Pull all first`)
+
+        let dirty = lines(git(hex, repo, ["status", "--porcelain", "--ignore-submodules=all"]))
+        if (dirty.count > 0) hex.print(`  {label(repo)} has {dirty.count} uncommitted change(s), they stay here`)
+    }
+
+    // HIDL, then the engine pointing at it
+    hex.print("")
+    hex.print("HIDL")
+    hex.progress(all.count / (all.count + 2), "pushing HIDL")
+    push(hex, HIDL, dry)
+    let hidl_at = first_line(git(hex, HIDL, ["rev-parse", "HEAD"]))
+
+    hex.print("")
+    hex.print("The engine")
+    move_hidl(hex, hidl_at, dry)
+    push(hex, ENGINE, dry)
+
+    // Everything on the engine, now that it's on GitHub as they want it
+    hex.progress((all.count + 1) / (all.count + 2), "pushing what's on the engine")
+    for (repo in after) {
+        hex.print("")
+        hex.print(label(repo))
+        push(hex, repo, dry)
+    }
+
+    hex.print("")
+    let done = dry ? "Dry run done, nothing was changed." : "Done, everything is on GitHub in order."
+    hex.print(done)
+    hex.say(done)
+}
+
+// A git command in a repository of the workspace, what it wrote, or the automation stopped with it when it failed
+func git(hex, repo, args) {
+    let ran = hex.run("git", ["-C", repo, ...args], ".", { quiet: true })
+    if (ran.exit != 0) error("git -C " + repo + " " + args.join(" ") + " failed\n" + ran.output)
+    return ran.output
+}
+
+// The lines of what a command wrote that have something on them
+func lines(text) {
+    return text.lines().filter(line => line.trim().length > 0)
+}
+
+func first_line(text) {
+    let all = lines(text)
+    return all.count > 0 ? all[0].trim() : ""
+}
+
+func label(repo) {
+    return repo == "." ? "the workspace" : repo
+}
+
+func checked_out(hex, repo) {
+    return hex.exists(repo + "/.git")
+}
+
+// The commits a repository has that its upstream hasn't, oldest first
+func unpushed(hex, repo) {
+    let ran = hex.run("git", ["-C", repo, "rev-list", "--reverse", "@{u}..HEAD"], ".", { quiet: true })
+    if (ran.exit != 0) error(label(repo) + " has no upstream branch to push to, check it out on a branch first")
+    return lines(ran.output)
+}
+
+func push(hex, repo, dry) {
+    let ahead = unpushed(hex, repo)
+    if (ahead.count == 0) {
+        hex.print(`  {label(repo)} is on GitHub already`)
+        return null
+    }
+
+    let branch = first_line(git(hex, repo, ["rev-parse", "--abbrev-ref", "HEAD"]))
+    if (dry) {
+        hex.print(`  would push {ahead.count} commit(s) of {label(repo)} to origin/{branch}`)
+        return null
+    }
+
+    git(hex, repo, ["push", "origin", branch])
+    hex.print(`  pushed {ahead.count} commit(s) of {label(repo)} to origin/{branch}`)
+}
+
+// The engine's HIDL submodule moved on to the commit HIDL is at and that committed. HIDL is worked on on its own
+// branch here, so it's only the engine's record of it that moves, nothing is checked out
+func move_hidl(hex, target, dry) {
+    let short = target.substring(0, 7)
+    let pinned = first_line(git(hex, ENGINE, ["rev-parse", "HEAD:Horizon.HIDL"]))
+    if (pinned == target) {
+        hex.print(`  the engine has HIDL at {short} already`)
+        return null
+    }
+
+    if (dry) {
+        hex.print(`  would move the engine's HIDL from {pinned.substring(0, 7)} to {short} and commit it`)
+        return null
+    }
+
+    if (!on_github(hex, HIDL, target)) error("HIDL " + short + " isn't on GitHub, the engine can't point at it")
+    let subject = first_line(git(hex, HIDL, ["log", "-1", "--format=%s", target]))
+    git(hex, ENGINE, ["add", "--", "Horizon.HIDL"])
+    git(hex, ENGINE, ["commit", "-q", "-m", "HIDL at " + subject, "--", "Horizon.HIDL"])
+    hex.print(`  moved the engine's HIDL to {short} and committed it`)
+}
+
+// Whether a commit is on GitHub, which is what a submodule may point at
+func on_github(hex, repo, commit) {
+    let ran = hex.run("git", ["-C", repo, "branch", "-r", "--contains", commit], ".", { quiet: true })
+    return ran.exit == 0 && lines(ran.output).any(line => line.contains("origin/"))
+}

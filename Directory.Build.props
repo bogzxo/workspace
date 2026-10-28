@@ -1,0 +1,17 @@
+<Project>
+  <!--
+    The workspace. Every repo in this folder (horizon, hex, dusk, Fighter2D) is built against the one engine
+    checkout here and the language inside of it, so a change to the engine is seen by Hex and the game the moment it
+    is saved. Horizon.Workspace.sln has all of them in one. Hex and the game don't pin an engine commit, setup.ps1
+    clones the lot and pull-all.ps1 keeps it all on development together.
+
+    MSBuild finds this file by walking up from a project, so it is in force for anything built on a machine that
+    has this folder, and nowhere else. A clone on its own, or the build on GitHub, goes by an engine cloned inside
+    it (Fighter2D/external/horizon, hex/horizon) or dusk's submodule. dotnet build -p:UseSubmodules=true builds a repo
+    against that copy here as well.
+  -->
+  <PropertyGroup Condition="'$(UseSubmodules)' != 'true'">
+    <HorizonRoot>$(MSBuildThisFileDirectory)horizon\</HorizonRoot>
+    <HidlRoot>$(MSBuildThisFileDirectory)horizon\Horizon.HIDL\</HidlRoot>
+  </PropertyGroup>
+</Project>

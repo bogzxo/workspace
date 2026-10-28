@@ -1,0 +1,13 @@
+# The repos of the workspace, each one its own, setup.ps1 clones them in
+/horizon/
+/hex/
+/Fighter2D/
+
+# Checkouts that are here on bogz's machines and aren't part of it
+/hidl/
+/dusk/
+
+# The machine's own
+.vs/
+.stignore
+~$*
